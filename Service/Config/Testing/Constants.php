@@ -35,3 +35,4 @@ define('SERVICE_CONNECT_FAIL', 1);
  */
 define('SERVICE_SEND_FAIL', 2);
 
+echo "this is test".PHP_EOL;

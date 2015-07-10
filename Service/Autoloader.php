@@ -12,6 +12,12 @@
 
 namespace Service;
 
+
+/**
+ *  加载常量配置文件.
+ */
+require_once __DIR__.'/Config/'.ucfirst(ENVIRONMENT).'/Constants.php';
+
 class Autoloader
 {
     /**
@@ -72,8 +78,3 @@ class Autoloader
         return FALSE;
     }
 }
-
-/**
- *  设置类自动加载的回调函数
- */
-spl_autoload_register('\Service\Autoloader::loadByNamespace');
