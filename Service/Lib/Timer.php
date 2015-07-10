@@ -53,8 +53,6 @@ class Timer
     public static function signalHandle()
     {
         if (!self::$_event) {
-            echo "ooo";
-            exit;
             // 为进程设置一个alarm闹钟信号.
             pcntl_alarm(1);
             self::tick();

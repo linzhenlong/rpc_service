@@ -9,6 +9,7 @@
 namespace Service;
 
 use Service\Lib\Timer;
+use Service\Events\EventInterface;
 
 class Worker
 {
@@ -321,8 +322,44 @@ class Worker
         self::daemonize();
         // 初始化所有worker实例，主要是监听端口.
         self::initWorkers();
+        // 初始化信号处理函数.
+        self::installSignal();
     }
 
+    protected static function installSignal()
+    {
+        // stop
+        // 安装一个信号处理器
+        pcntl_signal(SIGINT, array('Service\Worker', 'signalHandler'),false);
+        $a = debug_backtrace();
+        var_dump($a);
+    }
+
+    public static function signalHandler($signal)
+    {
+        switch($signal)
+        {
+            case SIGINT:
+                self::log("callback Service\Worker::signalHandler stop signal start...");
+                self::stopAll();
+                self::log("callback Service\Worker::signalHandler stop signal end...");
+                break;
+        }
+    }
+
+    public static function stopAll()
+    {
+        self::$_status = self::STATUS_SHUTDOWN;
+        // 主进程部分.
+        if (self::$_masterPid === posix_getpid()) {
+            self::log("rpc_service[".basename(self::$_startFile)."] Stopping ...");
+            $worker_pid_array = self::getAllWorkerPids();
+        }
+    }
+    
+    /**
+     *  初始化所有worker实例.
+     */
     protected static function initWorkers()
     {
         foreach(self::$_workers as $worker) {
@@ -331,8 +368,102 @@ class Worker
             }
              // 获取所有worker名称中最大长度
             $worker_name_length = strlen($worker->name);
-
+            if (self::$_maxWorkerNameLength < $worker_name_length) {
+                self::$_maxWorkerNameLength = $worker_name_length;
+            }
+            $socket_name_length = strlen($worker->getSocketName());
+            if (self::$_maxSocketNameLength < $socket_name_length) {
+                self::$_maxSocketNameLength = $socket_name_length;
+            }
+            // 获得运行用户名的最大长度.
+            if (empty($worker->user) || posix_getuid() !== 0) {
+                $worker->user = self::getCurrentUser();
+            }
+            $user_name_length = strlen($worker->user);
+            if (self::$_maxUserNameLength < $user_name_length) {
+                self::$_maxUserNameLength = $user_name_length;
+            }
+            // 监听端口.
+            $worker->listen();
         }
+    }
+
+
+    public function listen()
+    {
+        Autoloader::setRootPath($this->_appInitPath);
+        if (!$this->_socketName) {
+            return;
+        }
+        // 获取应用层通讯地址及监听端口.
+        list($scheme, $address) = explode(":", $this->_socketName, 2);
+        if ("tcp" != $scheme && "udp" != $scheme) {
+            $scheme = ucfirst($scheme);
+            $this->_protocol = '\\Protocols\\'.$scheme;
+            if(!class_exists($this->_protocol)) {
+                $this->_protocol = "\\Service\\Protocols\\".$scheme;
+                if (!class_exists($this->_protocol)) {
+                    throw new \Exception("class".$this->_protocol." not exists");
+                }
+            }
+        } else if("udp" === $scheme) {
+            $this->transport = $scheme;
+        }
+        // stream_socket_server
+        // Create an Internet or Unix domain server socket
+        // resource stream_socket_server ( string $local_socket [, int &$errno [, string &$errstr [, int $flags = STREAM_SERVER_BIND | STREAM_SERVER_LISTEN [, resource $context ]]]] )
+
+        // flags
+        // 如果传输协议是 udp 的话flags 使用STREAM_SERVER_BIND
+        // 因为For UDP sockets, you must use STREAM_SERVER_BIND as the flags parameter.
+        $flags = $this->transport === "udp" ? STREAM_SERVER_BIND : STREAM_SERVER_BIND | STREAM_SERVER_LISTEN;
+
+        // errno
+        $errno = 0;
+
+        // errstr
+        $errmsg = '';
+        $this->_mainSocket = stream_socket_server($this->transport.":".$address, $errno, $errmsg,$flags, $this->_context);
+        if (!$this->_mainSocket) {
+            throw new \Exception($errmsg);
+        }
+        // 尝试打开tcp的keepalive,关闭TCP Nagle算法
+        if(function_exists('socket_import_stream')) {
+            $socket = socket_import_stream($this->_mainSocket);
+            @socket_set_option($socket, SOL_SOCKET, SO_KEEPALIVE, 1);
+            @socket_set_option($socket, SOL_SOCKET, TCP_NODELAY, 1);
+        }
+        // 设置非阻塞.
+        stream_set_blocking($this->_mainSocket, 0);
+
+        // 放到全局事件轮询中监听_mainSocket可读事件（客户端连接事件）
+        if (self::$globalEvent) {
+            if ($this->transport !== "udp") {
+                self::$globalEvent->add($this->_mainSocket, EventInterface::EV_READ, array($this,'acceptConnection'));
+            } else {
+                self::$globalEvent->add($this->_mainSocket, EventInterface::EV_READ, array($this, 'acceptUdpConnection'));
+            }
+        }
+    }
+    /**
+     *  获取当前用户名.
+     * @return string
+     */
+    public static function getCurrentUser()
+    {
+        // 获取当前进程的用户id.
+        $uid = posix_getuid();
+        $user_info = posix_getpwuid($uid); //通过用户id 查询出来用户信息.
+        $user_name = isset($user_info['name']) ? $user_info['name'] : "none";
+        return $user_name;
+    }
+    /**
+     * 获取socket名称.
+     * @return string
+     */
+    public function getSocketName()
+    {
+        return $this->_socketName ? $this->_socketName: 'none';
     }
     /**
      * 初始化环境变量.
@@ -468,7 +599,6 @@ class Worker
         }
         umask(0);
         $pid = pcntl_fork(); // 在当前进程的当前位置产生分支(子进程).
-        var_dump($pid);
         if (-1 === $pid) {
             throw new \Exception('fork fail');
         } elseif($pid > 0) {

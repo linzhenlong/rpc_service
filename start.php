@@ -88,6 +88,7 @@ spl_autoload_register('\Service\Autoloader::loadByNamespace');
 $obj = new Worker('JsonNL://0.0.0.0:2015');
 $obj->count = 16;
 $obj->name = "lzltest";
+#$obj::$_appInitPath = "Apps";
 $obj::runAll();
 exit;
 Worker::$pidFile = __DIR__.'/rpc_service.pid';
