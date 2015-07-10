@@ -285,6 +285,27 @@ class Worker
         'start_timestamp' => 0,
         'worker_exit_info' =>[]
     ];
+    public $workerId = '';
+
+    public function __construct($socket_name = '', $context_option = array())
+    {
+        $this->workerId = spl_object_hash($this);
+        self::$_workers[$this->workerId] = $this;
+        self::$_pidMap[$this->workerId] = array();
+
+        // 获取实例化文件路径,用于自动加载设置根目录
+        $backtrace = debug_backtrace();
+        $this->_appInitPath = dirname($backtrace[0]['file']);
+
+        // 设置socket上下文.
+        if ($socket_name) {
+            $this->_socketName = $socket_name;
+            if (!isset($context_option['socket']['backlog'])) {
+                $context_option['socket']['backlog'] = self::DEFAULT_BACKLOG;
+            }
+            $this->_context = stream_context_create($context_option);
+        }
+    }
 
     public static function runAll()
     {
@@ -295,8 +316,27 @@ class Worker
         /**
          *  解析命令
          */
-
+        self::parseCommand();
+        // 尝试以守护进程模式运行
+        self::daemonize();
+        // 初始化所有worker实例，主要是监听端口.
+        self::initWorkers();
     }
+
+    protected static function initWorkers()
+    {
+        foreach(self::$_workers as $worker) {
+            if (empty($worker->name)) {
+                $worker->name = 'none';
+            }
+             // 获取所有worker名称中最大长度
+            $worker_name_length = strlen($worker->name);
+
+        }
+    }
+    /**
+     * 初始化环境变量.
+     */
     public static function init()
     {
         // 如果没有设置$pidFile,则生成默认值
@@ -322,6 +362,140 @@ class Worker
 
         // 初始化定时器
         Timer::init();
+    }
+
+    /**
+     *  解析命令.
+     *  php start.php start|stop|restart|reload|status
+     */
+    public static function parseCommand()
+    {
+        // 检查运行命令行参数.
+        global $argv;
+        $start_file = $argv[0];
+        if (!isset($argv[1])) {
+            exit("Usage: php {$start_file} {start|stop|restart|reload|status} \n");
+        }
+        // 命令
+        $command = trim($argv[1]);
+        // 子命令, 目前只支持-d
+        $command2 = isset($argv[2]) ? $argv[2] : '';
+        // 记录日志
+        $mode = '';
+        if ($command === 'start') {
+            if ($command2 === '-d') {
+                $mode = "in DAEMON mode";
+            } else {
+                $mode = "in DEBUG mode";
+            }
+        }
+        self::log("rpc_service[$start_file] $command $mode");
+        // 检查主进程是否在运行
+        $master_pid = @file_get_contents(self::$pidFile);
+        $master_is_alive = $master_pid && @posix_kill($master_pid, 0);
+        if ($master_is_alive) {
+            if ($command === 'start') {
+                self::log("rpc_service[$start_file] is running");
+            }
+        } else if($command !== 'start' && $command !== "restart") {
+            self::log("rpc_service[$start_file] not run");
+        }
+        // 根据命令做相应的处理
+        switch ($command)
+        {
+            case 'start':
+                if ($command2 === '-d') {
+                     // 守护进程的方式.
+                    self::$daemonize = true;
+                }
+            break;
+            case 'status':
+                // 尝试删除统计数据，避免脏数据
+                if (is_file(self::$_statisticsFile)) {
+                    @unlink(self::$_statisticsFile);
+                }
+                // 向主进程发送 SIGUSER2 信号,然后主进程会向所有子进程发送 SIGUSER2 信号
+                // 所有进程收到 SIGUSR2 信号后会向 $_statisticsFile 写入自己的状态
+                posix_kill($master_pid, SIGUSR2);
+                // 睡眠100毫秒,等待子进程将自己的状态写入到$_statisticsFile 指定文件中去.
+                usleep(100000);
+                readfile(self::$_statisticsFile);
+                exit(0);
+            break;
+            case 'restart': // 重启服务.
+                // todo 重启操作  先stop 然后start
+            case 'stop':
+                self::log("rpc_service[$start_file] is stoping ...");
+                // 向主进程发送SIGINT 信号, 主进程会向所有子进程发送SIGINT信号.
+                $master_pid && posix_kill($master_pid, SIGINT);
+                // 如果 $timeout 秒后主进程没有退出则展示失败界面.
+                $timeout = 5;
+                $start_time = time();
+                while(1) {
+                    // 检查主进程是否存活
+                    $master_is_alive = $master_pid && posix_kill($master_pid, 0);
+                    if ($master_is_alive) {
+                        if (time() - $start_time >= $timeout) {
+                            self::log("rpc_service[$start_file] stop fail...");
+                            exit;
+                        }
+                        usleep(100000);
+                        continue;
+                    }
+                    self::log("rpc_service[$start_file] stop success");
+                    break;
+                }
+            break;
+            case 'reload': // 平滑重启
+                posix_kill($master_pid, SIGUSR1);
+                self::log("rpc_service[$start_file] reload");
+            break;
+            // 未知命令
+            default:
+                exit("Usage: php {$start_file} {start|stop|restart|reload|status} \n");
+        }
+    }
+
+    /**
+     * 尝试以守护进程模式运行.
+     *
+     * @throws \Exception
+     */
+    public static function daemonize()
+    {
+        if (!self::$daemonize) {
+            return;
+        }
+        umask(0);
+        $pid = pcntl_fork(); // 在当前进程的当前位置产生分支(子进程).
+        var_dump($pid);
+        if (-1 === $pid) {
+            throw new \Exception('fork fail');
+        } elseif($pid > 0) {
+            exit(0);
+        }
+        if (-1 === posix_setsid()) {
+            throw new \Exception("setsid fail");
+        }
+        // fork again avoid SVR4 system regain the control of terminal
+        $pid = pcntl_fork();
+        if (-1 === $pid) {
+            throw new \Exception("fork fail");
+        } elseif(0 !== $pid) {
+            exit(0);
+        }
+    }
+    /**
+     * 写日志.
+     * @param string $msg 日志信息.
+     */
+    public static function log($msg = "")
+    {
+        $msg = $msg."\n";
+        if (self::$_status === self::STATUS_STARTING || !self::$daemonize) {
+            echo $msg;
+        }
+        @file_put_contents(self::$logFile, date("Y-m-d H:i:s")."".$msg, FILE_APPEND | LOCK_EX);
     }
 
     /**

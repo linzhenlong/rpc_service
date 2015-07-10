@@ -85,7 +85,11 @@ require_once __DIR__. '/Service/Autoloader.php';
  *  设置类自动加载的回调函数
  */
 spl_autoload_register('\Service\Autoloader::loadByNamespace');
-
+$obj = new Worker('JsonNL://0.0.0.0:2015');
+$obj->count = 16;
+$obj->name = "lzltest";
+$obj::runAll();
+exit;
 Worker::$pidFile = __DIR__.'/rpc_service.pid';
 Worker::$logFile = __DIR__.'/rpc_service.log';
 Worker::runAll();
