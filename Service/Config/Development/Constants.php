@@ -70,4 +70,8 @@ define("SERVICE_KILL_WORKER_TIMER_TIME", 1);
  */
 define("SERVICE_DEFAULT_BACKLOG", 1024);
 
+/**
+ *  UDP 的最大包长.
+ */
+define("SERVICE_MAX_UDP_PACKAGE_SIZE", 65535);
 echo "this is dev".PHP_EOL;

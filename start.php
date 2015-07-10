@@ -64,6 +64,13 @@ if(!extension_loaded('posix'))
 }
 
 /**
+ * 检查 proctitle 扩展
+ */
+if (!extension_loaded('proctitle')) {
+    exit("Please install proctitle extension. See http://doc3.workerman.net/install/install.html\n");
+}
+
+/**
  *  标记是否全局启动.
  */
 define("GLOBAL_START", 1);
@@ -79,5 +86,6 @@ require_once __DIR__. '/Service/Autoloader.php';
  */
 spl_autoload_register('\Service\Autoloader::loadByNamespace');
 
-
-Worker::test();
+Worker::$pidFile = __DIR__.'/rpc_service.pid';
+Worker::$logFile = __DIR__.'/rpc_service.log';
+Worker::runAll();
