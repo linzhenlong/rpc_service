@@ -23,7 +23,8 @@ class Autoloader
     /**
      * 设置应用程序初始化目录.
      *
-     * @param string $root_path  应用程序目录.
+     * @param string $root_path 应用程序目录.
+     *
      * @return void
      */
     public static function setRootPath($root_path)
@@ -45,31 +46,33 @@ class Autoloader
         // 如果是service 命名空间,则在当前目录寻找类文件
         if (strpos($name, 'Service\\') === 0) {
 
-            $class_file = __DIR__.substr($class_path, strlen('Service')).'.php';
+            $class_file = __DIR__ . substr($class_path, strlen('Service')) . '.php';
 
         } else {
 
             // 先尝试在应用目录寻找文件.
             if (self::$_appInitPath) {
-                $class_file = self::$_appInitPath.DIRECTORY_SEPARATOR.$class_path.'.php';
+                $class_file = self::$_appInitPath . DIRECTORY_SEPARATOR . $class_path . '.php';
             }
 
             // 文件不存在，则在上一层目录寻找.
             if (empty($class_file) || !is_file($class_file)) {
-                $class_file = __DIR__.DIRECTORY_SEPARATOR.'..'.DIRECTORY_SEPARATOR."$class_path.php";
+                $class_file = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . "$class_path.php";
             }
         }
-         // 找到文件.
+        // 找到文件.
         if (is_file($class_file)) {
             // 加载文件.
             require_once($class_file);
-            if (class_exists($name, false)) {
-                return true;
+            if (class_exists($name, FALSE)) {
+                return TRUE;
             }
         }
-        return false;
+
+        return FALSE;
     }
 }
+
 /**
  *  设置类自动加载的回调函数
  */

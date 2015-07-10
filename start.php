@@ -15,6 +15,9 @@
 
 ini_set("display_errors", 'on');
 
+/**
+ *  命名空间.
+ */
 use Service\Worker;
 
 

@@ -34,3 +34,4 @@ define('SERVICE_CONNECT_FAIL', 1);
  *  发送失败.
  */
 define('SERVICE_SEND_FAIL', 2);
+

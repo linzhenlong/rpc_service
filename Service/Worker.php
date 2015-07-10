@@ -8,8 +8,6 @@
 
 namespace Service;
 
-
-
 class Worker
 {
 
