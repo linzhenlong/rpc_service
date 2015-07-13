@@ -328,25 +328,129 @@ class Worker
 
     protected static function installSignal()
     {
+
         // stop
         // 安装一个信号处理器
-        pcntl_signal(SIGINT, array('Service\Worker', 'signalHandler'),false);
-        $a = debug_backtrace();
-        var_dump($a);
+        $a = pcntl_signal(SIGINT, array('\Service\Worker', 'signalHandler'),false);
+        // reload
+        pcntl_signal(SIGUSR1, array('\Service\Worker', 'signalHandler'), false);
+        // status
+        pcntl_signal(SIGUSR2, array('\Service\Worker'), 'signalHandler', false);
+
+
     }
 
     public static function signalHandler($signal)
     {
+        var_dump($signal);
         switch($signal)
         {
+            // stop
             case SIGINT:
                 self::log("callback Service\Worker::signalHandler stop signal start...");
                 self::stopAll();
                 self::log("callback Service\Worker::signalHandler stop signal end...");
                 break;
+            // reload
+            case SIGUSR1:
+                self::$_pidsToRestart = self::getAllWorkerPids();
+                self::reload();
+            break;
+            case SIGUSR2:
+                self::writeStatisticsToStatusFile();
+                break;
         }
     }
 
+    protected static function writeStatisticsToStatusFile()
+    {
+        // 主进程部分
+        if (self::$_masterPid === posix_getpid()) {
+            $loadavg = sys_getloadavg();
+            file_put_contents(self::$_statisticsFile, "---------------------------------------GLOBAL STATUS--------------------------------------------\n");
+            file_put_contents(self::$_statisticsFile, "Workerman version:".Worker::VERSION."        PHP version:".PHP_VERSION."\n", FILE_APPEND);
+            file_put_contents(self::$_statisticsFile, "start time:".date('Y-m-d H:i:s',self::$_globalStatistics['start_timestamp']).'   run '.floor((time()-self::$_globalStatistics['start_timestamp'])/(24*60*60)). ' days ' . floor(((time()-self::$_globalStatistics['start_timestamp'])%(24*60*60))/(60*60)) . " hours   \n", FILE_APPEND);
+            file_put_contents(self::$_statisticsFile, 'load average: '.implode(", ", $loadavg)."\n", FILE_APPEND);
+            file_put_contents(self::$_statisticsFile, count(self::$_pidMap)." workers     ".count(self::getAllWorkerPids())." processes \n", FILE_APPEND);
+            file_put_contents(self::$_statisticsFile, str_pad('worker_name', self::$_maxWorkerNameLength) . " exit_status     exit_count\n", FILE_APPEND);
+            foreach (self::$_pidMap as $worker_id => $worker_pid_array) {
+                $worker = self::$_workers[$worker_id];
+                if (isset(self::$_globalStatistics['worker_exit_info'][$worker_id])) {
+                    foreach (self::$_globalStatistics['worker_exit_info'][$worker_id] as $worker_exit_status => $worker_exit_count) {
+                        file_put_contents(self::$_statisticsFile, str_pad($worker->name, self::$_maxWorkerNameLength) . " " . str_pad($worker_exit_status, 16). " $worker_exit_count\n", FILE_APPEND);
+                    }
+                } else {
+                    file_put_contents(self::$_statisticsFile, str_pad($worker->name, self::$_maxWorkerNameLength) . " " . str_pad(0, 16). " 0\n", FILE_APPEND);
+                }
+            }
+            file_put_contents(self::$_statisticsFile,  "---------------------------------------PROCESS STATUS-------------------------------------------\n", FILE_APPEND);
+            file_put_contents(self::$_statisticsFile, "pid\tmemory  ".str_pad('listening', self::$_maxSocketNameLength)." ".str_pad('worker_name', self::$_maxWorkerNameLength)." connections ".str_pad('total_request', 13)." ".str_pad('send_fail', 9)." ".str_pad('throw_exception', 15)."\n", FILE_APPEND);
+
+            chmod(self::$_statisticsFile, 0722);
+
+            foreach (self::getAllWorkerPids() as $worker_pid) {
+                posix_kill($worker_pid, SIGUSR2);
+            }
+            return;
+        }
+        // 子进程部分
+        $worker = current(self::$_workers);
+        $worker_status_str = posix_getpid()."\t".str_pad(round(memory_get_usage(true)/(1024*1024),2)."M",7)."  ".str_pad($worker->getSocketName(), self::$_maxSocketNameLength)."  "
+        .str_pad(($worker->name === $worker->getSocketName() ? 'none' : $worker->name), self::$_maxWorkerNameLength)."";
+        #$worker_status_str .= str_pad();
+    }
+
+    /**
+     *  执行平滑重启流程.
+     */
+    protected static function reload()
+    {
+        // 主进程部分
+        if (self::$_masterPid === posix_getpid()) {
+            // 设置平滑重启状态
+            if (self::$_status !== self::STATUS_RELOADING && self::$_status !== self::STATUS_SHUTDOWN) {
+                self::log("rpc_service[".basename(self::$_startFile)."] reloading");
+                self::$_status = self::STATUS_RELOADING;
+            }
+
+             // 如果worker设置了reloadable = false, 则过滤掉
+            $reloadable_pid_array = array();
+            foreach (self::$_pidMap as $worker_id => $worker_pid_array) {
+                $worker = self::$_workers[$worker_id];
+                if ($worker->reloadable) {
+                    foreach ($worker_pid_array as $pid) {
+                        $reloadable_pid_array[$pid] = $pid;
+                    }
+                }
+            }
+            // 得到所有可以重启的进程
+            self::$_pidsToRestart = array_intersect(self::$_pidsToRestart, $reloadable_pid_array); // 获取数组中的交集.
+            // 平滑重启完毕
+            if (empty(self::$_pidsToRestart)) {
+                if (self::$_status !== self::STATUS_SHUTDOWN) {
+                    self::$_status = self::STATUS_RUNNING;
+                }
+                return;
+            }
+            // 继续执行平滑重启流程
+            $one_worker_pid = current(self::$_pidsToRestart);
+            // 给子进程发送平滑重启信号
+            posix_kill($one_worker_pid, SIGUSR1);
+            // 定时器,如果子进程在KILL_WORKER_TIMER_TIME秒后没有退出，则强行杀死
+            Timer::add(self::KILL_WORKER_TIMER_TIME, 'posix_kill', array($one_worker_pid, SIGINT), false);
+        } else {
+            // 子进程部分
+            // 如果当前worker的reloadable属性为真,则执行退出
+            $worker = current(self::$_workers);
+            if ($worker->reloadable) {
+                self::stopAll();
+            }
+        }
+    }
+    /**
+     * 执行关闭流程.
+     * $return void
+     */
     public static function stopAll()
     {
         self::$_status = self::STATUS_SHUTDOWN;
@@ -354,7 +458,50 @@ class Worker
         if (self::$_masterPid === posix_getpid()) {
             self::log("rpc_service[".basename(self::$_startFile)."] Stopping ...");
             $worker_pid_array = self::getAllWorkerPids();
+            // 向所有子进程发送SIGINT信号,标明关闭服务.
+
+            foreach ($worker_pid_array as $worker_pid) {
+                posix_kill($worker_pid, SIGINT);
+                Timer::add(self::KILL_WORKER_TIMER_TIME, 'posix_kill', array($worker_pid, SIGINT), false);
+            }
+        } else {
+            // 子进程部分.
+            // 执行stop逻辑
+            foreach (self::$_workers as $worker) {
+                $worker->stop();
+            }
+            exit(0);
         }
+    }
+
+    /**
+     * 停止当前worker实例
+     * @return void
+     */
+    public function stop()
+    {
+        if ($this->onWorkerStop) {
+            call_user_func_array($this->onWorkerStop, $this);
+        }
+        // 删除相关监听事件，关闭_mainSocket
+        self::$globalEvent->del($this->_mainSocket, EventInterface::EV_READ);
+        @fclose($this->_mainSocket);
+    }
+
+
+    /**
+     * 获取所有子进程pid.
+     * @return array
+     */
+    public static function getAllWorkerPids()
+    {
+        $pid_array = array();
+        foreach (self::$_pidMap as $worker_pid_array) {
+            foreach ($worker_pid_array as $worker_pid) {
+                $pid_array[$worker_pid] = $worker_pid;
+            }
+        }
+        return $pid_array;
     }
     
     /**

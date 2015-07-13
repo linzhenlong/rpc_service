@@ -127,5 +127,17 @@ class Timer
         }
     }
 
+    /**
+     * 删除定时器.
+     * @param $timer_id
+     *
+     * @return mixed
+     */
+   public static function del($timer_id)
+   {
+       if (self::$_event) {
+           return self::$_event->del($timer_id, EventInterface::EV_TIMER);
+       }
+   }
 
 }
