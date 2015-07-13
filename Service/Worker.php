@@ -331,7 +331,7 @@ class Worker
 
         // stop
         // 安装一个信号处理器
-        $a = pcntl_signal(SIGINT, array('\Service\Worker', 'signalHandler'),false);
+        pcntl_signal(SIGINT, array('\Service\Worker', 'signalHandler'),false);
         // reload
         pcntl_signal(SIGUSR1, array('\Service\Worker', 'signalHandler'), false);
         // status
